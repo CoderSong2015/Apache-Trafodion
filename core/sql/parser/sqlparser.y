@@ -1371,6 +1371,7 @@ static void enableMakeQuotedStringISO88591Mechanism()
 %token <tokval> TOK_REGEXP
 %token <tokval> TOK_REGION
 %token <tokval> TOK_REGISTER            /* Tandem extension */
+%token <tokval> TOK_REGISTERED
 %token <tokval> TOK_UNREGISTER          /* Tandem extension */
 %token <tokval> TOK_RENAME              /* Tandem extension */
 %token <tokval> TOK_REPLICATE           /* Tandem extension non-reserved word*/
@@ -1659,6 +1660,7 @@ static void enableMakeQuotedStringISO88591Mechanism()
   QualifiedName                 *pQualName;
   rec_datetime_field            datetimeField;
   RelExpr              		*relx;
+  Scan                          *scan;
   double              		     doubleVal;
   Hint              		    *hint;
   HbaseAccessOptions          *hbaseAccessOptions;
@@ -1824,8 +1826,7 @@ static void enableMakeQuotedStringISO88591Mechanism()
 %type <item>              mvlog_values_list
 
 // IUD
-%type <boolean>			  no_log
-%type <uint>                              no_check_log
+%type <uint>                      no_check_log
 %type <boolean>			  no_rollback
 %type <boolean>			  ignore_triggers
 
@@ -1928,10 +1929,6 @@ static void enableMakeQuotedStringISO88591Mechanism()
 %type <strSeq>    		qualified_name
 %type <strSeq>    		module_name
 %type <strSeq>    		routine_action_name
-%type <stringval>    		qualified_guardian_name
-%type <stringval> 		system_volume_name
-%type <stringval> 		volume_name
-%type <stringval> 		subvolume_name
 %type <stringval> 		correlation_name
 %type <relx>      		table_reference
 %type <relx>  		        table_name_and_hint
@@ -2181,6 +2178,7 @@ static void enableMakeQuotedStringISO88591Mechanism()
 %type <tokval>    		showstats_opts
 %type <relx>      	        update_statement_searched
 %type <relx>      		update_statement_searched_body
+%type <scan>                    update_statement_target_table
 %type <relx>                    merge_statement
 // QSTUFF
 %type <item>      		set_update_list
@@ -2436,8 +2434,11 @@ static void enableMakeQuotedStringISO88591Mechanism()
 %type <pStmtDDL>                drop_component_privilege_stmt
 %type <pStmtDDL>                register_component_statement
 %type <pStmtDDL>                register_user_statement
+%type <pStmtDDL>                register_hive_statement
+%type <boolean>                 optional_internal_clause
 %type <pStmtDDL>                unregister_component_statement
 %type <pStmtDDL>		unregister_user_statement
+%type <pStmtDDL>		unregister_hive_statement
 %type <pElemDDL>  		privileges
 %type <pElemDDL>  		privilege_action_list
 %type <pElemDDL>  		privilege_action
@@ -5857,39 +5858,6 @@ routine_action_name : identifier_with_dollar
 				   $$ = $1;
 			       }
 
-// type stringval - a fully qualified guardian style system and volume
-// name having the form: "\SYSNAME.$VOLNAME".  If \SYSNAME is not
-// provided, use the defined system name.
-//
-qualified_guardian_name : volume_name
-                        {
-                          if (SqlParser_MPLOC.hasSystemName())
-                            $1->prepend(SqlParser_MPLOC.getSystemName() + ".");
-                        }
-                        | system_volume_name
-
-// type stringval - a fully specified guardian style system and volume
-// name having the form: "\SYSNAME.$VOLNAME".  Call
-// transformIdentifier to make sure it is valid, etc.
-//
-system_volume_name : SYSTEM_VOLUME_NAME
-                               {
-                                 $$=$1;
-                                 if ( ($$==NULL) || transformIdentifier(*$$, TRUE/*upCase*/, FALSE/*^ ok?*/, NASTRING_ALLOW_NSK_GUARDIAN_NAME_FORMAT) ) YYERROR;
-                               }
-
-// type stringval - a guardian style system volume name having the
-// form: "$VOLNAME".  Call transformIdentifier to make sure it is
-// valid, etc.
-//
-volume_name : DOLLAR_IDENTIFIER
-                               {
-                                 $$=$1;
-                                 if ( ($$==NULL) || transformIdentifier(*$$, TRUE/*upCase*/, FALSE/*^ ok?*/, NASTRING_ALLOW_NSK_GUARDIAN_NAME_FORMAT) ) YYERROR;
-                               }
-
-subvolume_name : identifier
-
 /* type stringval */
 correlation_name : identifier
 
@@ -6210,8 +6178,7 @@ table_as_stream_any   : table_as_stream |
 				((RelExpr *)$$)->getGroupAttr()->setSkipInitialScan(TRUE);				
                         }
 
-table_as_stream : 
-TOK_STREAM '(' table_name ')'
+table_as_stream : TOK_STREAM '(' table_name optimizer_hint ')'
 			{
                            if (in3GL_ > 0)
                            {
@@ -6225,8 +6192,10 @@ TOK_STREAM '(' table_name ')'
                              YYABORT;
                            }
                            $$ = new(PARSERHEAP())Scan(*$3,TRUE);
+                           $$->getGroupAttr()->setStream(TRUE);
+                           if ($4)
+                             $$->setHint($4);
                            delete $3;
-                           ((RelExpr *)$$)->getGroupAttr()->setStream(TRUE);
 			}
 //QSTUFF
 
@@ -6406,15 +6375,6 @@ index_hint : qualified_name
           (qualifiedNameFromStrings($1)->getQualifiedNameAsAnsiString(),
            PARSERHEAP()); 
       }
-    | qualified_guardian_name '.' subvolume_name '.' identifier
-      {
-        NAString *nam = new (PARSERHEAP()) NAString(($1->data()),PARSERHEAP());
-        nam->append(".", 1);
-        nam->append(($3->data()), $3->length());
-        nam->append(".", 1);
-        nam->append(($5->data()), $5->length());
-        $$ = nam;
-      }
 
 /* type relx */
 table_reference : table_name_and_hint
@@ -6435,23 +6395,19 @@ table_reference : table_name_and_hint
                                 }
 
 //QSTUFF
-              | table_as_stream_any optimizer_hint { if ($2) $1->setHint($2); }
-              | table_as_stream_any as_clause optimizer_hint
+              | table_as_stream_any
+              | table_as_stream_any as_clause
 	                        {
-								$$ = new (PARSERHEAP())
-								RenameTable($1, *$2);
-                                if ($3) $$->setHint($3);
+                                  $$ = new (PARSERHEAP())
+                                    RenameTable($1, *$2);
                                   delete $2;
-								  								
                                 }
-              | table_as_stream_any  as_clause optimizer_hint
-                '(' derived_column_list ')'
+              | table_as_stream_any as_clause '(' derived_column_list ')'
                                 {
                                    $$ = new (PARSERHEAP())
-								   RenameTable($1, *$2, $5);
-                                   if ($3) $$->setHint($3);
+                                     RenameTable($1, *$2, $4);
                                    delete $2;
-								 }
+                                }
 
               | upd_stmt_w_acc_type_and_as_clause
                 { $$ = $1; }
@@ -14511,6 +14467,12 @@ sql_schema_definition_statement :
               | cleanup_objects_statement
                                 {
                                 }
+              | register_hive_statement
+                                {
+                                }
+              | unregister_hive_statement
+                                {
+                                }
 
 /* type pStmtDDL */
 sql_schema_manipulation_statement :
@@ -15889,6 +15851,10 @@ objects_identifier :
                   | TOK_INVALID TOK_VIEWS { $$ = new (PARSERHEAP()) NAString("INVALID_VIEWS"); }
                   | TOK_FUNCTIONS { $$ = new (PARSERHEAP()) NAString("FUNCTIONS"); }
                   | TOK_TABLE_MAPPING TOK_FUNCTIONS { $$ = new (PARSERHEAP()) NAString("TABLE_FUNCTIONS"); }
+                  | TOK_HIVE TOK_REGISTERED TOK_TABLES { $$ = new (PARSERHEAP()) NAString("HIVE_REG_TABLES"); }
+                  | TOK_HIVE TOK_REGISTERED TOK_VIEWS { $$ = new (PARSERHEAP()) NAString("HIVE_REG_VIEWS"); }
+                  | TOK_HIVE TOK_REGISTERED TOK_OBJECTS { $$ = new (PARSERHEAP()) NAString("HIVE_REG_OBJECTS"); }
+                  | TOK_HIVE TOK_EXTERNAL TOK_TABLES { $$ = new (PARSERHEAP()) NAString("HIVE_EXT_TABLES"); }
 
 privileges_identifier :
                     TOK_PRIVILEGES { $$ = new (PARSERHEAP()) NAString("PRIVILEGES"); }
@@ -19980,302 +19946,208 @@ merge_insert_with_values : '(' column_list ')' TOK_VALUES '(' value_expression_l
 
 /* type relx */
 update_statement_searched : TOK_UPDATE update_statement_searched_body
-				{
-				  $$ = $2;
-				}
+                {
+                  $$ = $2;
+                }
 
 // QSTUFF + Mv
 /* type relx */
-update_statement_searched_body : no_log table_name set_update_list where_clause
-				{
-				  Scan * inputScan =
-				    new (PARSERHEAP())
-				    Scan(CorrName(*$2, PARSERHEAP()));
-
-				  // attache the WHERE clause to the input scan
-				  inputScan->addSelPredTree($4);
-				  $$ = new (PARSERHEAP())
-				    Update(CorrName(*$2, PARSERHEAP()),
-					   NULL,
-					   REL_UNARY_UPDATE,
-					   inputScan,
-					   $3);
-				  if (TRUE == $1)
-				  {
-				    ((Update*)$$)->setNoLogOperation();	
-				  }
-
-				  delete $2;
-				}
-		| no_log table_name as_clause set_update_list where_clause
-				{
-                                  $2->setCorrName(*$3); 
-				  Scan * inputScan =
-				    new (PARSERHEAP())
-				    Scan(CorrName(*$2, PARSERHEAP()));
-
-				  // attach the WHERE clause to the input scan
-				  inputScan->addSelPredTree($5);
-				  $$ = new (PARSERHEAP())
-				    Update(CorrName(*$2, PARSERHEAP()),
-					   NULL,
-					   REL_UNARY_UPDATE,
-					   inputScan,
-					   $4);
-				  if (TRUE == $1)
-				  {
-				    ((Update*)$$)->setNoLogOperation();	
-				  }
-				  delete $2;
-				  delete $3;
-				}
-		| no_log TOK_WITH TOK_NO TOK_ROLLBACK table_name set_update_list where_clause
+update_statement_searched_body : update_statement_target_table set_update_list where_clause
                 {
-                  Scan * inputScan =
-                    new (PARSERHEAP())
-                    Scan(CorrName(*$5, PARSERHEAP()));
-
-                  // attache the WHERE clause to the input scan
-                  inputScan->addSelPredTree($7);
+                  // attach the WHERE clause to the input scan
+                  $1->addSelPredTree($3);
                   $$ = new (PARSERHEAP())
-                    Update(CorrName(*$5, PARSERHEAP()),
+                    Update(CorrName($1->getTableName(), PARSERHEAP()),
+                           NULL,
+                           REL_UNARY_UPDATE,
+                           $1,
+                           $2);
+                }
+
+		| update_statement_target_table as_clause set_update_list where_clause
+                {
+                  $1->getTableName().setCorrName(*$2); 
+                  // attach the WHERE clause to the input scan
+                  $1->addSelPredTree($4);
+                  $$ = new (PARSERHEAP())
+                    Update(CorrName($1->getTableName(), PARSERHEAP()),
+                           NULL,
+                           REL_UNARY_UPDATE,
+                           $1,
+                           $3);
+                  delete $2;
+                }
+
+		| TOK_WITH TOK_NO TOK_ROLLBACK update_statement_target_table set_update_list where_clause
+                {
+                  // attach the WHERE clause to the input scan
+                  $4->addSelPredTree($6);
+                  $$ = new (PARSERHEAP())
+                    Update(CorrName($4->getTableName(), PARSERHEAP()),
                        NULL,
                        REL_UNARY_UPDATE,
-                       inputScan,
-                       $6);
-                  if (TRUE == $1)
-                  {
-                    ((Update*)$$)->setNoLogOperation();	
-                  }
-
+                       $4,
+                       $5);
 		   ((Update*)$$)->setNoRollbackOperation();
+                }
+
+		| TOK_WITH TOK_NO TOK_ROLLBACK update_statement_target_table as_clause set_update_list where_clause
+                {
+                  $4->getTableName().setCorrName(*$5); 
+                  // attach the WHERE clause to the input scan
+                  $4->addSelPredTree($7);
+                  $$ = new (PARSERHEAP())
+                    Update(CorrName($4->getTableName(), PARSERHEAP()),
+                       NULL,
+                       REL_UNARY_UPDATE,
+                       $4,
+                       $6);
+                  ((Update*)$$)->setNoRollbackOperation();
 
                   delete $5;
                 }
-		| no_log TOK_WITH TOK_NO TOK_ROLLBACK table_name as_clause set_update_list where_clause
+
+                | update_statement_target_table set_update_list TOK_WHERE TOK_CURRENT TOK_OF entity_name_as_item
                 {
-                  $5->setCorrName(*$6); 
-                  Scan * inputScan =
-                    new (PARSERHEAP())
-                    Scan(CorrName(*$5, PARSERHEAP()));
-
-                  // attache the WHERE clause to the input scan
-                  inputScan->addSelPredTree($8);
                   $$ = new (PARSERHEAP())
-                    Update(CorrName(*$5, PARSERHEAP()),
-                       NULL,
-                       REL_UNARY_UPDATE,
-                       inputScan,
-                       $7);
-                  if (TRUE == $1)
-                  {
-                    ((Update*)$$)->setNoLogOperation();	
+                    Update(CorrName($1->getTableName(), PARSERHEAP()),
+                           NULL,
+                           REL_UNARY_UPDATE,
+                           $1,
+                           $2,
+                           $6);
+                }
+
+                | update_statement_target_table as_clause set_update_list TOK_WHERE TOK_CURRENT TOK_OF entity_name_as_item
+                {
+                  $1->getTableName().setCorrName(*$2); 
+                  $$ = new (PARSERHEAP())
+                    Update(CorrName($1->getTableName(), PARSERHEAP()),
+                           NULL,
+                           REL_UNARY_UPDATE,
+                           $1,
+                           $3,
+                           $7);
+                  delete $2;
+                }
+
+                | table_as_stream_any set_update_list where_clause
+                {
+                  if ($3 != NULL) {
+                    // attach the WHERE clause to the input scan
+                    $1->addSelPredTree($3);
                   }
+                  $$ = new (PARSERHEAP())
+                    Update(((Scan *)$1)->getTableName(),
+                           NULL,
+                           REL_UNARY_UPDATE,
+                           $1,
+                           $2);
+                }
 
-		   ((Update*)$$)->setNoRollbackOperation();
+                | '[' firstn_sorted NUMERIC_LITERAL_EXACT_NO_SCALE ']' update_statement_target_table set_update_list
+                       where_clause
+                {
+                  Int64 numRows = atoInt64($3->data());
+                  if ($2 == TOK_LAST)
+                    {
+                      yyerror("LAST option not supported with UPDATE statement. \n");
+                      YYERROR;
+                    }
 
-                  delete $5;
+                  // attach the WHERE clause to the input scan
+                  $5->addSelPredTree($7);
+                  $$ = new (PARSERHEAP())
+                    Update(CorrName($5->getTableName(), PARSERHEAP()),
+                           NULL,
+                           REL_UNARY_UPDATE,
+                           $5,
+                           $6);
+                  $$->setFirstNRows(numRows);
+                }
+                | '[' firstn_sorted NUMERIC_LITERAL_EXACT_NO_SCALE ']' update_statement_target_table as_clause set_update_list
+                            where_clause
+                {
+                  $5->getTableName().setCorrName(*$6); 
+                  Int64 numRows = atoInt64($3->data());
+                  if ($2 == TOK_LAST)
+                    {
+                      yyerror("LAST option not supported with UPDATE statement. \n");
+                      YYERROR;
+                    }
+
+                  // attach the WHERE clause to the input scan
+                  $5->addSelPredTree($8);
+                  $$ = new (PARSERHEAP())
+                    Update(CorrName($5->getTableName(), PARSERHEAP()),
+                           NULL,
+                           REL_UNARY_UPDATE,
+                           $5,
+                           $7);
+                  $$->setFirstNRows(numRows);
                   delete $6;
                 }
-				| no_log table_name set_update_list TOK_WHERE TOK_CURRENT TOK_OF entity_name_as_item
-				 {
-				    Scan * inputScan = 
-				      new (PARSERHEAP())
-				     Scan(CorrName(*$2, PARSERHEAP()));
 
-				  $$ = new (PARSERHEAP())
-				    Update(CorrName(*$2, PARSERHEAP()),
-					   NULL,
-					   REL_UNARY_UPDATE,
-					   inputScan,
-					   $3,
-					   $7);
-				  if (TRUE == $1)
-				  {
-				    ((Update*)$$)->setNoLogOperation();	
-				  }
-				  delete $2;
-				}
-				| no_log table_name as_clause set_update_list TOK_WHERE TOK_CURRENT TOK_OF entity_name_as_item
-				 {
-                                    $2->setCorrName(*$3); 
-				    Scan * inputScan = 
-				      new (PARSERHEAP())
-				     Scan(CorrName(*$2, PARSERHEAP()));
-
-				  $$ = new (PARSERHEAP())
-				    Update(CorrName(*$2, PARSERHEAP()),
-					   NULL,
-					   REL_UNARY_UPDATE,
-					   inputScan,
-					   $4,
-					   $8);
-				  if (TRUE == $1)
-				  {
-				    ((Update*)$$)->setNoLogOperation();	
-				  }
-				  delete $2;
-				  delete $3;
-				}
-
-	      			| no_log table_as_stream_any set_update_list where_clause
-				{
-		                  if ($4 != NULL) {
-				    // attach the WHERE clause to the input scan
-				    $2->addSelPredTree($4);
-                		  }
-				  $$ = new (PARSERHEAP())
-				    Update(((Scan *)$2)->getTableName(),
-					   NULL,
-					   REL_UNARY_UPDATE,
-					   $2,
-					   $3);
-				  if (TRUE == $1)
-				  {
-				    ((Update*)$$)->setNoLogOperation();	
-				  }
-				}
-
-// QSTUFF + Mv
-
-// QSTUFF + Mv
-/* type relx */
-update_statement_searched_body : no_log '[' firstn_sorted NUMERIC_LITERAL_EXACT_NO_SCALE ']' table_name set_update_list
-                                 where_clause
-				{
-				  Scan * inputScan =
-				    new (PARSERHEAP())
-				    Scan(CorrName(*$6, PARSERHEAP()));
-
-				  Int64 numRows = atoInt64($4->data());
-				  if ($3 == TOK_LAST)
-				    {
-				      yyerror("LAST option not supported with UPDATE statement. \n");
-				      YYERROR;
-				    }
-
-				  // attache the WHERE clause to the input scan
-				  inputScan->addSelPredTree($8);
-				  $$ = new (PARSERHEAP())
-				    Update(CorrName(*$6, PARSERHEAP()),
-					   NULL,
-					   REL_UNARY_UPDATE,
-					   inputScan,
-					   $7);
-
-				  if (TRUE == $1)
-				    {
-				      ((Update*)$$)->setNoLogOperation();	
-				    }
-
-				  inputScan->setFirstNRows(numRows);
-
-				  delete $6;
-				}
-               | no_log '[' firstn_sorted NUMERIC_LITERAL_EXACT_NO_SCALE ']' table_name as_clause set_update_list
-                                 where_clause
-				{
-                                  $6->setCorrName(*$7); 
-				  Scan * inputScan =
-				    new (PARSERHEAP())
-				    Scan(CorrName(*$6, PARSERHEAP()));
-
-				  Int64 numRows = atoInt64($4->data());
-				  if ($3 == TOK_LAST)
-				    {
-				      yyerror("LAST option not supported with UPDATE statement. \n");
-				      YYERROR;
-				    }
-
-				  // attache the WHERE clause to the input scan
-				  inputScan->addSelPredTree($9);
-				  $$ = new (PARSERHEAP())
-				    Update(CorrName(*$6, PARSERHEAP()),
-					   NULL,
-					   REL_UNARY_UPDATE,
-					   inputScan,
-					   $8);
-
-				  if (TRUE == $1)
-				    {
-				      ((Update*)$$)->setNoLogOperation();	
-				    }
-
-				  inputScan->setFirstNRows(numRows);
-
-				  delete $6;
-				  delete $7;
-				}
-		| no_log TOK_WITH TOK_NO TOK_ROLLBACK '[' firstn_sorted NUMERIC_LITERAL_EXACT_NO_SCALE ']' table_name set_update_list
-                                 where_clause
+		| TOK_WITH TOK_NO TOK_ROLLBACK '[' firstn_sorted NUMERIC_LITERAL_EXACT_NO_SCALE ']'
+                       update_statement_target_table set_update_list where_clause
                 {
-                  Scan * inputScan =
-                    new (PARSERHEAP())
-                    Scan(CorrName(*$9, PARSERHEAP()));
-
-		  Int64 numRows = atoInt64($7->data());
-                  if ($6 == TOK_LAST)
+		  Int64 numRows = atoInt64($6->data());
+                  if ($5 == TOK_LAST)
                     {
                       yyerror("LAST option not supported with UPDATE statement. \n");
                       YYERROR;
                     }
 
-                  // attache the WHERE clause to the input scan
-                  inputScan->addSelPredTree($11);
+                  // attach the WHERE clause to the input scan
+                  $8->addSelPredTree($10);
                   $$ = new (PARSERHEAP())
-                    Update(CorrName(*$9, PARSERHEAP()),
-                       NULL,
-                       REL_UNARY_UPDATE,
-                       inputScan,
-                       $10);
+                    Update(CorrName($8->getTableName(), PARSERHEAP()),
+                           NULL,
+                           REL_UNARY_UPDATE,
+                           $8,
+                           $9);
+                  ((Update*)$$)->setNoRollbackOperation();
 
-                  if (TRUE == $1)
-                    {
-                      ((Update*)$$)->setNoLogOperation();	
-                    }
-
-		     ((Update*)$$)->setNoRollbackOperation();
-
-                  inputScan->setFirstNRows(numRows);
-
-                  delete $9;
+                  $$->setFirstNRows(numRows);
                 }
-		| no_log TOK_WITH TOK_NO TOK_ROLLBACK '[' firstn_sorted NUMERIC_LITERAL_EXACT_NO_SCALE ']' table_name as_clause set_update_list
-                                 where_clause
-                {
-                  $9->setCorrName(*$10); 
-                  Scan * inputScan =
-                    new (PARSERHEAP())
-                    Scan(CorrName(*$9, PARSERHEAP()));
 
-		  Int64 numRows = atoInt64($7->data());
-                  if ($6 == TOK_LAST)
+		| TOK_WITH TOK_NO TOK_ROLLBACK '[' firstn_sorted NUMERIC_LITERAL_EXACT_NO_SCALE ']'
+                       update_statement_target_table as_clause set_update_list where_clause
+                {
+                  $8->getTableName().setCorrName(*$9); 
+
+		  Int64 numRows = atoInt64($6->data());
+                  if ($5 == TOK_LAST)
                     {
                       yyerror("LAST option not supported with UPDATE statement. \n");
                       YYERROR;
                     }
 
-                  // attache the WHERE clause to the input scan
-                  inputScan->addSelPredTree($12);
+                  // attach the WHERE clause to the input scan
+                  $8->addSelPredTree($11);
                   $$ = new (PARSERHEAP())
-                    Update(CorrName(*$9, PARSERHEAP()),
-                       NULL,
-                       REL_UNARY_UPDATE,
-                       inputScan,
-                       $11);
+                    Update(CorrName($8->getTableName(), PARSERHEAP()),
+                           NULL,
+                           REL_UNARY_UPDATE,
+                           $8,
+                           $10);
 
-                  if (TRUE == $1)
-                    {
-                      ((Update*)$$)->setNoLogOperation();	
-                    }
-
-		     ((Update*)$$)->setNoRollbackOperation();
-
-                  inputScan->setFirstNRows(numRows);
+                  ((Update*)$$)->setNoRollbackOperation();
+                  $$->setFirstNRows(numRows);
 
                   delete $9;
-                  delete $10;
                 }
+
+update_statement_target_table: table_name optimizer_hint
+                {
+                  Scan * inputScan = new (PARSERHEAP())
+                    Scan(CorrName(*$1, PARSERHEAP()));
+                  if ($2)
+                    inputScan->setHint($2);
+                  delete $1;
+                  $$=inputScan;
+                }
+
 /* type item */
 set_delete_list : TOK_SET TOK_ON TOK_ROLLBACK  set_delete_rollback_list
 					   {
@@ -20390,7 +20262,7 @@ set_clause : identifier '=' value_expression
                          
 
 /* type relx */
-delete_start_tokens : TOK_DELETE no_check_log TOK_FROM table_name 
+delete_start_tokens : TOK_DELETE no_check_log TOK_FROM table_name optimizer_hint
                {
                  TransMode *transMode = CmpCommon::transMode();
 
@@ -20426,10 +20298,15 @@ delete_start_tokens : TOK_DELETE no_check_log TOK_FROM table_name
                    {
                      ((Delete*)$$)->setNoCheck(TRUE);
                    }
+
+                  if ($5)
+                   {
+                     inputScan->setHint($5);
+                   }
    
                  delete $4;
                }
-          | TOK_DELETE no_check_log TOK_FROM table_name TOK_AS correlation_name
+          | TOK_DELETE no_check_log TOK_FROM table_name TOK_AS correlation_name optimizer_hint 
                {
                  TransMode *transMode = CmpCommon::transMode();
 
@@ -20467,17 +20344,22 @@ delete_start_tokens : TOK_DELETE no_check_log TOK_FROM table_name
                      ((Delete*)$$)->setNoCheck(TRUE);
                    }
     
+                  if ($7)
+                   {
+                     inputScan->setHint($7);
+                   }
+   
                  delete $4;
                  delete $6;
                }
 
-delete_statement : TOK_DELETE TOK_COLUMNS '(' quoted_string_list ')' TOK_FROM table_name  where_clause
+delete_statement : TOK_DELETE TOK_COLUMNS '(' quoted_string_list ')' TOK_FROM table_name optimizer_hint where_clause
                {
                  Scan * inputScan =
                    new (PARSERHEAP()) Scan(CorrName(*$7, PARSERHEAP()));
 
 		 // attach the WHERE clause to the input scan
-		 inputScan->addSelPredTree($8);
+		 inputScan->addSelPredTree($9);
     
                  $$ = new (PARSERHEAP())
                    Delete(CorrName(*$7, PARSERHEAP()),
@@ -20487,6 +20369,9 @@ delete_statement : TOK_DELETE TOK_COLUMNS '(' quoted_string_list ')' TOK_FROM ta
                           NULL, NULL,
 			  $4);
    
+                  if ($8)
+                    inputScan->setHint($8);
+
                  delete $7;
                }
 
@@ -20657,13 +20542,13 @@ delete_statement : TOK_DELETE TOK_USING TOK_PURGEDATA TOK_FROM table_name
 
 				  $$ = del;
 				}
-		| TOK_DELETE no_check_log TOK_WITH TOK_NO TOK_ROLLBACK TOK_FROM table_name where_clause 
+		| TOK_DELETE no_check_log TOK_WITH TOK_NO TOK_ROLLBACK TOK_FROM table_name optimizer_hint where_clause 
                 {
                   Scan * inputScan =
                     new (PARSERHEAP()) Scan(CorrName(*$7, PARSERHEAP()));
 
                   // attach the WHERE clause to the input scan
-                  inputScan->addSelPredTree($8);
+                  inputScan->addSelPredTree($9);
                   $$ = new (PARSERHEAP())
                     Delete(CorrName(*$7, PARSERHEAP()),
                        NULL,
@@ -20683,16 +20568,20 @@ delete_statement : TOK_DELETE TOK_USING TOK_PURGEDATA TOK_FROM table_name
                      ((Delete*)$$)->setNoCheck(TRUE);
                    }
  
+                  if ($8)
+                    inputScan->setHint($8);
+
                   delete $7;
                 }
-		| TOK_DELETE no_check_log TOK_WITH TOK_NO TOK_ROLLBACK TOK_FROM table_name TOK_AS correlation_name where_clause 
+		| TOK_DELETE no_check_log TOK_WITH TOK_NO TOK_ROLLBACK TOK_FROM table_name TOK_AS correlation_name
+                             optimizer_hint where_clause 
                 {
                   $7->setCorrName(*$9); 
                   Scan * inputScan =
                     new (PARSERHEAP()) Scan(CorrName(*$7, PARSERHEAP()));
 
                   // attach the WHERE clause to the input scan
-                  inputScan->addSelPredTree($10);
+                  inputScan->addSelPredTree($11);
                   $$ = new (PARSERHEAP())
                     Delete(CorrName(*$7, PARSERHEAP()),
                        NULL,
@@ -20712,11 +20601,14 @@ delete_statement : TOK_DELETE TOK_USING TOK_PURGEDATA TOK_FROM table_name
                      ((Delete*)$$)->setNoCheck(TRUE);
                    }
  
+                  if ($10)
+                    inputScan->setHint($10);
+
                   delete $7;
                   delete $9;
                 }
 
-delete_statement : TOK_DELETE no_check_log ignore_triggers '[' firstn_sorted NUMERIC_LITERAL_EXACT_NO_SCALE ']' TOK_FROM table_name where_clause
+delete_statement : TOK_DELETE no_check_log ignore_triggers '[' firstn_sorted NUMERIC_LITERAL_EXACT_NO_SCALE ']' TOK_FROM table_name optimizer_hint where_clause
 				{
 				  Scan * inputScan =
                                     new (PARSERHEAP()) Scan(CorrName(*$9, PARSERHEAP()));
@@ -20729,7 +20621,7 @@ delete_statement : TOK_DELETE no_check_log ignore_triggers '[' firstn_sorted NUM
 				    }
 
 				  // attach the WHERE clause to the input scan
-                                  inputScan->addSelPredTree($10);
+                                  inputScan->addSelPredTree($11);
 				  $$ = new (PARSERHEAP())
 				    Delete(CorrName(*$9, PARSERHEAP()),
 					   NULL,
@@ -20747,11 +20639,15 @@ delete_statement : TOK_DELETE no_check_log ignore_triggers '[' firstn_sorted NUM
 				      ((Delete*)$$)->setIgnoreTriggers(TRUE);
 				    }
 
+                                  if ($10)
+                                    inputScan->setHint($10);
+
 				  $$->setFirstNRows(numRows);
 
 				  delete $9;
 				}
-		| TOK_DELETE no_check_log TOK_WITH TOK_NO TOK_ROLLBACK '[' firstn_sorted NUMERIC_LITERAL_EXACT_NO_SCALE ']' TOK_FROM table_name where_clause
+		| TOK_DELETE no_check_log TOK_WITH TOK_NO TOK_ROLLBACK '[' firstn_sorted NUMERIC_LITERAL_EXACT_NO_SCALE ']'
+                             TOK_FROM table_name optimizer_hint where_clause
                 {
                   Scan * inputScan =
                     new (PARSERHEAP()) Scan(CorrName(*$11, PARSERHEAP()));
@@ -20764,7 +20660,7 @@ delete_statement : TOK_DELETE no_check_log ignore_triggers '[' firstn_sorted NUM
                     }
 
                   // attach the WHERE clause to the input scan
-                  inputScan->addSelPredTree($12);
+                  inputScan->addSelPredTree($13);
                   $$ = new (PARSERHEAP())
                     Delete(CorrName(*$11, PARSERHEAP()),
                        NULL,
@@ -20777,14 +20673,17 @@ delete_statement : TOK_DELETE no_check_log ignore_triggers '[' firstn_sorted NUM
                       ((Delete*)$$)->setNoLogOperation();
                     }
 
-		    ((Delete*)$$)->setNoRollbackOperation();
+                  ((Delete*)$$)->setNoRollbackOperation();
+
+                  if ($12)
+                    inputScan->setHint($12);
 
                   $$->setFirstNRows(numRows);
 
                   delete $11;
                 }
 
-| delete_start_tokens TOK_WHERE TOK_CURRENT TOK_OF entity_name_as_item 
+                | delete_start_tokens TOK_WHERE TOK_CURRENT TOK_OF entity_name_as_item 
                                 {
                                   Delete *del = (Delete *)$1;
                                   ComASSERT(del);
@@ -20794,8 +20693,8 @@ delete_statement : TOK_DELETE no_check_log ignore_triggers '[' firstn_sorted NUM
 				  $$ = del;
 
                                 }
-// QSTUFF + Mv
-	| TOK_DELETE no_check_log TOK_FROM table_as_stream_any where_clause
+                // QSTUFF + Mv
+	        | TOK_DELETE no_check_log TOK_FROM table_as_stream_any where_clause
 				{
 		                  if ($5 != NULL) {
 				    // attach the WHERE clause to the input scan
@@ -20813,8 +20712,9 @@ delete_statement : TOK_DELETE no_check_log ignore_triggers '[' firstn_sorted NUM
 				  }
 				}
 
-      | TOK_DELETE no_check_log TOK_FROM table_name set_delete_list where_clause
+                | TOK_DELETE no_check_log TOK_FROM table_name set_delete_list where_clause
 				{
+                                  // Note: Hints not supported with SET ON ROLLBACK clause
 				  Scan * inputScan =
 				    new (PARSERHEAP()) Scan(CorrName(*$4, PARSERHEAP()));
 
@@ -20837,6 +20737,7 @@ delete_statement : TOK_DELETE no_check_log ignore_triggers '[' firstn_sorted NUM
 				}
         | TOK_DELETE no_check_log TOK_FROM table_name set_delete_list TOK_WHERE TOK_CURRENT TOK_OF entity_name_as_item
                     {
+                                  // Note: Hints not supported with SET ON ROLLBACK clause
 				  $$ = new (PARSERHEAP())
 				    Delete(CorrName(*$4, PARSERHEAP()),
 					   NULL,
@@ -20853,6 +20754,7 @@ delete_statement : TOK_DELETE no_check_log ignore_triggers '[' firstn_sorted NUM
 
 	       | TOK_DELETE no_check_log TOK_FROM table_as_stream_any set_delete_list where_clause
 				{
+                                  // Note: Hints not supported with SET ON ROLLBACK clause
 		                  if ($6 != NULL) {
 				    // attach the WHERE clause to the input scan
 				    $4->addSelPredTree($6);
@@ -20868,11 +20770,10 @@ delete_statement : TOK_DELETE no_check_log ignore_triggers '[' firstn_sorted NUM
 				      ((Delete*)$$)->setNoLogOperation();	
 				    }
 				}
-// QSTUFF + Mv
 
-// Long Running Delete
-
-| TOK_DELETE no_check_log TOK_WITH TOK_MULTI TOK_COMMIT multi_commit_size TOK_FROM table_name 
+              // QSTUFF + Mv
+              // Long Running Delete
+              | TOK_DELETE no_check_log TOK_WITH TOK_MULTI TOK_COMMIT multi_commit_size TOK_FROM table_name 
               {
 		// Make sure the transaction modes are compatible
 		if (CmpCommon::transMode()->invalidMultiCommitCompatibility())
@@ -30389,6 +30290,10 @@ cleanup_objects_statement : TOK_CLEANUP cleanup_object_identifier ddl_qualified_
                    ot = StmtDDLCleanupObjects::SCHEMA_PRIVATE_;
                  else if (*$2 == "SCHEMA_S")
                    ot = StmtDDLCleanupObjects::SCHEMA_SHARED_;
+                 else if (*$2 == "HIVE_TABLE")
+                   ot = StmtDDLCleanupObjects::HIVE_TABLE_;
+                 else if (*$2 == "HIVE_VIEW")
+                   ot = StmtDDLCleanupObjects::HIVE_VIEW_;
                  else if (*$2 == "OBJECT")
                    ot = StmtDDLCleanupObjects::UNKNOWN_;
                  else
@@ -30507,6 +30412,8 @@ cleanup_object_identifier : object_identifier
                        | TOK_PRIVATE TOK_SCHEMA   { $$ = new (PARSERHEAP()) NAString("SCHEMA_P"); }
                        | TOK_SHARED TOK_SCHEMA   { $$ = new (PARSERHEAP()) NAString("SCHEMA_S"); }
                        | TOK_OBJECT { $$ = new (PARSERHEAP()) NAString("OBJECT");}
+                       | TOK_HIVE TOK_TABLE { $$ = new (PARSERHEAP()) NAString("HIVE_TABLE");}
+                       | TOK_HIVE TOK_VIEW { $$ = new (PARSERHEAP()) NAString("HIVE_VIEW");}
 
 /* type boolean */
 optional_cleanup_return_details : empty
@@ -31228,17 +31135,6 @@ mvlog_table_name : qualified_name
 
 //-- MVLOG
 //----------------------------------------------------------------------------
-
-// type boolean		
-				 
-no_log: empty
-		{
-			$$ = FALSE;
-		}
-		| TOK_NOMVLOG
-		{
-			$$ = TRUE;
-		}
 
  no_check_log: empty
 		{
@@ -33112,6 +33008,84 @@ nsk_node_name: BACKSLASH_SYSTEM_NAME
                 delete $1;
                }
 
+/* type pStmtDDL */
+// Syntax: 
+// register [internal] hive {table|view|schema} 
+//          [if not exists] <obj-name> [cascade]
+//
+register_hive_statement : TOK_REGISTER optional_internal_clause TOK_HIVE object_identifier optional_if_not_exists_clause ddl_qualified_name optional_cascade
+                          {
+                            if (NOT ((*$4 == "TABLE") ||
+                                     (*$4 == "VIEW") ||
+                                     (*$4 == "SCHEMA")))
+                              {
+                                YYERROR;
+                              }
+      
+                            if ($7 && (*$4 != "VIEW"))
+                              {
+                                YYERROR;
+                              }
+
+                            $$ = new (PARSERHEAP())
+                              StmtDDLRegOrUnregHive(
+                                   *$6,
+                                   TRUE, // register
+                                   (*$4 == "TABLE" ? COM_BASE_TABLE_OBJECT
+                                    : (*$4 == "VIEW" ? COM_VIEW_OBJECT
+                                       : COM_SHARED_SCHEMA_OBJECT)),
+                                   $5, // if not exists?
+                                   $2, // is internal registration?
+                                   $7, // is cascade?
+                                   FALSE,
+                                   PARSERHEAP());
+                            delete $6;
+                          }
+
+// Syntax: 
+// unregister [internal] hive {table|view|schema} 
+//            [if exists] <obj-name> [cascade]
+//
+unregister_hive_statement : TOK_UNREGISTER optional_internal_clause TOK_HIVE object_identifier optional_if_exists_clause ddl_qualified_name optional_cascade optional_cleanup
+                              {
+                                if (NOT ((*$4 == "TABLE") ||
+                                         (*$4 == "VIEW") ||
+                                         (*$4 == "SCHEMA")))
+                                  {
+                                    YYERROR;
+                                  }
+                                
+                                if ($7 &&
+                                    (*$4 != "VIEW"))
+                                  {
+                                    YYERROR;
+                                  }
+                                
+                                $$ = new (PARSERHEAP())
+                                  StmtDDLRegOrUnregHive(
+                                       *$6,
+                                       FALSE, // unregister
+                                       (*$4 == "TABLE" ? COM_BASE_TABLE_OBJECT
+                                        : (*$4 == "VIEW" ? COM_VIEW_OBJECT
+                                           : COM_SHARED_SCHEMA_OBJECT)),
+                                       $5, // if exists?
+                                       $2, // is internal unregister?
+                                       $7, // is cascade?
+                                       $8, // is cleanup?
+                                       PARSERHEAP());
+                                delete $6;
+                              }
+
+/* type boolean */
+optional_internal_clause : empty
+                  {
+                    $$ = FALSE;
+                  }
+                  | TOK_INTERNAL
+                  {
+		    $$ = TRUE;
+		  }
+
 /*CREATE ROLE*/
 create_role_statement : TOK_CREATE TOK_ROLE authorization_identifier
                              optional_with_admin_clause
@@ -33863,6 +33837,7 @@ nonreserved_word :      TOK_ABORT
                       | TOK_REFRESH // MV
                       | TOK_REGION
                       | TOK_REGISTER
+                      | TOK_REGISTERED
                       | TOK_REINITIALIZE
                       | TOK_RELATED
                       | TOK_RELATEDNESS     // Versioning

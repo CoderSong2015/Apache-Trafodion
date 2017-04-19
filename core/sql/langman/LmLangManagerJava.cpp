@@ -361,9 +361,9 @@ void LmLanguageManagerJava::initialize(LmResult &result,
 
     JavaVMInitArgs args;
     args.nOptions = (Lng32) (numUserOpts + numHookOpts);
-    args.version = JNI_VERSION_1_4;
+    args.version = JNI_VERSION_1_6;
     args.options = vmOptions;
-    args.ignoreUnrecognized = JNI_FALSE;
+    args.ignoreUnrecognized = JNI_TRUE;
 
     // Create JVM
     TIMER_ON(jvmTimer)
@@ -1420,8 +1420,8 @@ LmResult LmLanguageManagerJava::initJavaClasses()
   TIMER_OFF(set2ClsTimer, "Load Set 2 of classes");
     enableType2Conn_ = TRUE;
     mapDefaultConnToType2Conn_ = TRUE;
-    jdbcMxT2Driver_ = loadSysClass("org/trafodion/jdbc/t2/T2Driver",
-	                         "org.trafodion.jdbc.t2.T2Driver", diagsArea_);
+    jdbcMxT2Driver_ = loadSysClass("org/apache/trafodion/jdbc/t2/T2Driver",
+	                         "org.apache.trafodion.jdbc.t2.T2Driver", diagsArea_);
     if (jdbcMxT2Driver_ == NULL)
       return LM_ERR;
 

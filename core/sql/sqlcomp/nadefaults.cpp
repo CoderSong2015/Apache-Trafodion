@@ -1569,7 +1569,7 @@ SDDkwd__(EXE_DIAGNOSTIC_EVENTS,		"OFF"),
   DDui1__(GEN_MATR_SIZE_UP,			"8"),
   DDui___(GEN_MAX_NUM_PART_DISK_ENTRIES,       "3"),
   DDui___(GEN_MAX_NUM_PART_NODE_ENTRIES,       "255"),
-  DDui1__(GEN_MEM_PRESSURE_THRESHOLD,		"100"),
+  DDui1__(GEN_MEM_PRESSURE_THRESHOLD,		"10000"),
   DDui1__(GEN_MJ_BUFFER_SIZE,			"32768"),
   DDui1__(GEN_MJ_NUM_BUFFERS,			"1"),
   DDui1__(GEN_MJ_SIZE_DOWN,			"2"),
@@ -1771,7 +1771,7 @@ SDDkwd__(EXE_DIAGNOSTIC_EVENTS,		"OFF"),
  DDui1__(HBASE_MIN_BYTES_PER_ESP_PARTITION,     "67108864"),
 
   DDkwd__(HBASE_NATIVE_IUD,		"ON"),
- DDui1__(HBASE_NUM_CACHE_ROWS_MAX,	"10000"),
+ DDui1__(HBASE_NUM_CACHE_ROWS_MAX,	"1024"),
  DDui1__(HBASE_NUM_CACHE_ROWS_MIN,	"100"),
 
   DDkwd__(HBASE_RANGE_PARTITIONING,	        "ON"),
@@ -1943,9 +1943,6 @@ SDDkwd__(EXE_DIAGNOSTIC_EVENTS,		"OFF"),
 
  // CQDs for Trafodion on Hive
  // Main ones to use:
- // HIVE_MAX_STRING_LENGTH: Hive "string" data type gets converted
- //                         into a VARCHAR with this length
- //                         This should be deprecated from Trafodion R2.1
  // HIVE_MAX_STRING_LENGTH_IN_BYTES: Hive "string" data type gets converted
  //                                  into a VARCHAR with this length
  // HIVE_MIN_BYTES_PER_ESP_PARTITION: Make one ESP for this many bytes
@@ -1965,11 +1962,11 @@ SDDkwd__(EXE_DIAGNOSTIC_EVENTS,		"OFF"),
   DDint__(HIVE_LIB_HDFS_PORT_OVERRIDE,          "-1"),
   DDint__(HIVE_LOCALITY_BALANCE_LEVEL,          "0"),
   DDui___(HIVE_MAX_ESPS,                        "9999"),
-  DDui___(HIVE_MAX_STRING_LENGTH,               "32000"),
   DDui___(HIVE_MAX_STRING_LENGTH_IN_BYTES,      "32000"),
   DDkwd__(HIVE_METADATA_JAVA_ACCESS,            "ON"),
   DDint__(HIVE_METADATA_REFRESH_INTERVAL,       "0"),
   DDflt0_(HIVE_MIN_BYTES_PER_ESP_PARTITION,     "67108864"),
+  DDkwd__(HIVE_NO_REGISTER_OBJECTS,             "OFF"),
   DDui___(HIVE_NUM_ESPS_PER_DATANODE,           "2"),
   DDpct__(HIVE_NUM_ESPS_ROUND_DEVIATION,        "34"),
   DDint__(HIVE_SCAN_SPECIAL_MODE,                "0"),
@@ -1979,7 +1976,6 @@ SDDkwd__(EXE_DIAGNOSTIC_EVENTS,		"OFF"),
   DDkwd__(HIVE_USE_FAKE_TABLE_DESC,             "OFF"),
   DDkwd__(HIVE_USE_HASH2_AS_PARTFUNCION,        "ON"),
   DDkwd__(HIVE_VIEWS,                           "ON"),
-  DDkwd__(HIVE_VIEWS_CREATE_EXTERNAL_TABLE,     "ON"),
 
  // -------------------------------------------------------------------------
 
@@ -2020,6 +2016,7 @@ SDDkwd__(EXE_DIAGNOSTIC_EVENTS,		"OFF"),
   DDkwd__(INCORPORATE_SKEW_IN_COSTING,		  "ON"),
   DDkwd__(INDEX_ELIMINATION_LEVEL,              "AGGRESSIVE"),
   DDui1__(INDEX_ELIMINATION_THRESHOLD,          "50"),
+  DDkwd__(INDEX_HINT_WARNINGS,                  "ON"),
  SDDkwd__(INFER_CHARSET,			"OFF"),
 
   // UDF initial row cost CQDs
@@ -2085,12 +2082,12 @@ SDDkwd__(ISO_MAPPING,           (char *)SQLCHARSETSTRING_ISO88591),
   DDint__(LOB_HDFS_PORT,                       "0"),
   DD_____(LOB_HDFS_SERVER,                 "default"), 
  
-   // Size of memoryin bytes  used to perform I/O to lob data file 
+   // Size of memoryin Megabytes  used to perform I/O to lob data file 
   // default size is 512MB   . Change to adjust memory usage. 
   DDint__(LOB_MAX_CHUNK_MEM_SIZE,            "512"), 
   // default size is 10 G  (10000 M)
   DDint__(LOB_MAX_SIZE,                         "10000"),
-  // default size is 32000. Change this to extract more data into memory.
+  // (unused)default size is 32000. Change this to extract more data into memory.
   DDui___(LOB_OUTPUT_SIZE,                         "32000"),
 
   DD_____(LOB_STORAGE_FILE_DIR,                 "/lobs"), 
@@ -5938,9 +5935,7 @@ enum DefaultConstants NADefaults::validateAndInsert(const char *attrName,
      }
      break;
 
-     // max char col length is 10M (10485760).
-     // max char col length is defined in common/ComSmallDefs.h
-     // Currently set to 16M
+     // max char col length is defined in common/ComSmallDefs.h.
      // In special cases, it could be overridden. Internal use only or
      // use only under trafodion supervision.
      case TRAF_MAX_CHARACTER_COL_LENGTH:
