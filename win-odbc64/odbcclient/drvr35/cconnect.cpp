@@ -489,7 +489,10 @@ SQLRETURN CConnect::Connect(SQLCHAR *ServerName,
 	char clientUserNameUTF8[MAX_SQL_IDENTIFIER_LEN+1];
 	int  translen=0;
 	char transError[128];
-	
+	char tbuffer[MAX_SQL_IDENTIFIER_LEN * 4 + 1];
+	char *token = NULL;
+	char *last;
+
 	clearError();
 
 	m_CurrentOdbcAPI = SQL_API_SQLCONNECT;
@@ -592,7 +595,6 @@ SQLRETURN CConnect::Connect(SQLCHAR *ServerName,
 	
 	// Set the Assocation Service Object Reference
 	strcpy(m_ASSvc_ObjRef, m_DSValue.m_DSServer);
-	strcat(m_ASSvc_ObjRef, ":NonStopODBCAS");
 
 	m_RowsetErrorRecovery = m_DSValue.m_DSRowsetErrorRecovery;
 	m_FetchBufferSize = m_DSValue.m_DSFetchBufferSize;
@@ -761,6 +763,16 @@ SQLRETURN CConnect::Connect(SQLCHAR *ServerName,
 	m_CDInfoSent = TRUE;				// May need to investigate
 
 	
+	memset(tbuffer, 0, sizeof(tbuffer));
+	strncpy(tbuffer, m_ASSvc_ObjRef, strlen(m_ASSvc_ObjRef));
+
+	token = strtok_s(tbuffer, ",",&last);
+
+reTrycon:
+
+	memset(m_ASSvc_ObjRef, 0, sizeof(m_ASSvc_ObjRef));
+	strncpy(m_ASSvc_ObjRef, token, strlen(token));
+	strcat(m_ASSvc_ObjRef, ":NonStopODBCAS");
 	// populate the SrvrCallContext
 	m_srvrCallContext.sqlHandle = this;
 	m_srvrCallContext.ASSvc_ObjRef = m_ASSvc_ObjRef;
@@ -776,8 +788,15 @@ retryGetObjRef:
 	m_srvrCallContext.SQLSvc_ObjRef = NULL;
 	
 	rc = ThreadControlProc(&m_srvrCallContext);
-	if (rc == SQL_ERROR)
+	if (rc == SQL_ERROR){
+		token = strtok_s(NULL, ",", &last);
+		if (token != NULL)
+		{
+			goto reTrycon;
+		}
+
 		return rc;
+	}
 	m_srvrCallContext.odbcAPI = SQL_API_SQLCONNECT;
 	m_srvrCallContext.SQLSvc_ObjRef = m_SQLSvc_ObjRef;
 	m_srvrCallContext.dialogueId = m_DialogueId;
